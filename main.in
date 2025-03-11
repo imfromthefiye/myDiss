@@ -1,0 +1,71 @@
+# Initial setup (keeping your existing code)
+clear
+units si
+dimension 3
+boundary f f f
+atom_style sphere
+newton on
+comm_modify vel yes
+comm_style brick
+
+region domain block 0 0.2 0 0.2 0 0.5 units box
+create_box 2 domain
+
+# Soil creation with FCC lattice (your code is good)
+# Define lattice first, then create soil
+lattice fcc 0.005656
+region soil_bed block 0 0.2 0 0.2 0 0.3 units box
+create_atoms 1 region soil_bed
+group soil type 1
+set type 1 diameter 0.004
+set type 1 density 2650
+
+# Delete any overlapping particles at soil-probe interface
+region overlap_region cylinder z 0.1 0.1 0.006 0.32 0.42 units box
+group overlap_group region overlap_region
+group soil_to_delete intersect soil overlap_group
+delete_atoms group soil_to_delete
+
+# Probe creation with FCC lattice (your code is good)
+# Define new lattice for probe, then create probe
+lattice fcc 0.002828
+region probe_cyl cylinder z 0.1 0.1 0.005 0.32 0.42 units box
+create_atoms 2 region probe_cyl
+group probe type 2
+set group probe diameter 0.002
+set group probe density 7800
+
+# Add these necessary components:
+# Particle interactions
+neighbor        0.002 bin
+neigh_modify    delay 0 every 1 check yes one 5000
+
+# Granular pair style for soil-probe interaction
+pair_style      gran/hooke/history 200000.0 NULL 50.0 NULL 0.5 1
+pair_coeff      * *
+
+# Fixes for dynamics
+fix             probe_rigid probe rigid single
+fix             nve_soil soil nve/sphere
+fix             gravity all gravity 9.81 vector 0 0 -1
+
+
+
+# Output settings
+thermo          1000
+thermo_style    custom step atoms ke pe vol temp press
+thermo_modify   lost warn norm yes
+
+# Visualization output
+dump            1 all custom 1000 dump.*.dat id type x y z radius
+dump_modify     1 sort id
+
+# Initial conditions
+velocity        all set 0.0 0.0 0.0
+timestep        1e-6
+
+# Minimize before running
+minimize        1.0e-6 1.0e-6 1000 1000
+
+# Short run to check setup
+run             0
