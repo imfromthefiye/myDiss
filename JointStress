@@ -1,3 +1,5 @@
+% TRIAXIAL TEST
+
 %make a box model, which will be put on a slope
 clear;
 fs.randSeed(1);%build random model
