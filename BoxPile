@@ -1,0 +1,168 @@
+%% Burrowing out Probe
+%step1: packing the elements
+clear;
+fs.randSeed(1);%random model seed, 1,2,3...
+B=obj_Box;%declare a box object
+B.name='BoxPile';
+%--------------initial model------------
+B.GPUstatus='auto';%program will test the CPU and GPU speed, and choose the quicker one
+B.ballR=0.1;
+B.isShear=0;
+B.isClump=0;%if isClump=1, particles are composed of several balls
+B.distriRate=0.25;%define distribution of ball radius, 
+B.sampleW=20;%width, length, height, average radius
+B.sampleL=0;%when L is zero, it is a 2-dimensional model
+B.sampleH=20;
+B.BexpandRate=4;%boundary is 4-ball wider than 
+B.PexpandRate=0;
+B.type='topPlaten';%add a top platen to compact model
+B.isSample=1;
+%B.type='TriaxialCompression';
+B.setType();
+B.buildInitialModel();%B.show();
+d=B.d;%d.breakGroup('sample');d.breakGroup('lefPlaten');
+%you may change the size distribution of elements here, e.g. d.mo.aR=d.aR*0.95;
+d.mo.aR=d.aR;
+%--------------end initial model------------
+
+%---------- gravity sedimentation
+B.gravitySediment();%you may use B.gravitySediment(10); to increase sedimentation time (10)
+d.mo.aMUp(:)=0;
+%B.compactSample(2);%input is compaction time
+%mfs.reduceGravity(d,1);%reduce the gravity of element
+
+%------------return and save result--------------
+d.status.dispEnergy();%display the energy of the model
+
+d.mo.setGPU('off');
+d.clearData(1);%clear dependent data
+d.recordCalHour('BoxPile1Finish');
+save(['TempModel/' B.name '1.mat'],'B','d');
+save(['TempModel/' B.name '1R' num2str(B.ballR) '-distri' num2str(B.distriRate)  'aNum' num2str(d.aNum) '.mat']);
+d.calculateData();
+d.show('aR');
+-----------------------------------------------------------------------------------------------------------------------
+%set the material of the model
+clear
+load('TempModel/BoxPile1.mat');
+B.setUIoutput();%set the output
+d=B.d;
+d.mo.setGPU('off');%close the GPU calculation
+d.calculateData();%calculate data
+d.getModel();%get xyz from d.mo
+d.showB=2;
+%---------------delele elements on the top
+mZ=d.mo.aZ(1:d.mNum);%get the Z of elements
+topLayerFilter=mZ>max(mZ)*0.7;
+d.delElement(find(topLayerFilter));%delete elements according to id
+
+%--------------assign new material
+matTxt=load('Mats\soil1.txt');%load material file
+Mats{1,1}=material('Soil1',matTxt,B.ballR);
+Mats{1,1}.Id=1;
+matTxt2=load('Mats\StrongRock.txt');
+Mats{2,1}=material('StrongRock',matTxt2,B.ballR);
+Mats{2,1}.Id=2;
+d.Mats=Mats;%assign new material
+d.groupMat2Model({'sample'},1);%apply the new material
+
+%---------create a pile struct, pile.X .Y .Z. R
+pileW=0.8;pileL=0;pileH=8;ballR=B.ballR;Rrate=0.7;
+sampleId=d.GROUP.sample;%get the Id of sample
+drivingDis=6;
+sampleTop=max(d.mo.aZ(sampleId)+d.mo.aR(sampleId));%get the top side of sample
+
+pile1=mfs.denseModel(0.8,@mfs.makeBox,pileW,pileL,pileH,ballR);%make a pile struct
+pile1.Y(:)=0;%in a 2D model Y=0
+
+%pile1.X=pile1.X+3.2;
+%pile1.X=pile1.X+B.sampleW-pileH/2;pile1.Z=pile1.Z+B.sampleW/2;
+pileId1=d.addElement('StrongRock',pile1);%mat Id, obj
+d.addGroup('Pile1',pileId1);%add a new group
+d.setClump('Pile1');%set the pile clump
+
+d.moveGroup('Pile1',(B.sampleW-pileW)/2,0,sampleTop-drivingDis);%move the group
+d.minusGroup('sample','Pile1',0.4);%remove overlap elements from sample
+
+d.addFixId('X',d.GROUP.Pile1);%fix the X-coordinate of the pile
+
+pile2=mfs.denseModel(0.5,@mfs.makeBox,pileH,pileL,pileW,ballR);%make a pile struct
+pile2.Y(:)=0;%in a 2D model Y=0
+pile2.X=pile2.X+B.sampleW-pileH/2;pile2.Z=pile2.Z+B.sampleW/2;
+pileId2=d.addElement('StrongRock',pile2,'wall');%mat Id, obj
+%fs.showObj(pile1);%show the new pile object
+d.addGroup('Pile2',pileId2);%add a new group
+d.setClump('Pile2');%set the pile clump
+d.moveGroup('Pile2',1,0,2);%move the group
+d.rotateGroup('Pile2','XZ',30);
+d.minusGroup('sample','Pile2',0.5);%remove overlap elements from sample
+
+d.removeGroupForce(d.GROUP.Pile2,d.GROUP.rigB);%remove force between Pile2 and right boundary
+d.delElement(d.GROUP.topB);%delete top boundary
+d.mo.bFilter(:)=false;%break all bonds
+d.mo.zeroBalance();
+d.resetStatus();
+d.mo.setGPU('auto');
+
+d.balance('Standard',4);%balance the force and energy in the model
+%d.show('StessZZ');return;
+d.connectGroup('sample');%connect all bonds
+d.connectGroup('sample','Pile1');%connect soil and pile
+d.mo.zeroBalance();
+%d.balance('Standard',2);%balance the force and energy in the model
+
+%------------record data
+d.mo.setGPU('off');
+d.clearData(1);%clear dependent data in d
+d.recordCalHour('BoxPile2Finish');
+save(['TempModel/' B.name '2.mat'],'B','d');
+save(['TempModel/' B.name '2R' num2str(B.ballR) '-distri' num2str(B.distriRate)  'aNum' num2str(d.aNum) '.mat']);
+d.calculateData();
+-----------------------------------------------------------------------------------------------------------------------
+clear;
+load('TempModel/BoxPile2.mat');
+B.setUIoutput();
+d=B.d;
+d.calculateData();
+d.mo.setGPU('off');
+%initializing
+d.getModel();%d.setModel();%reset the initial status of the model
+d.status=modelStatus(d);%initialize model status, which records running information, same to d.resetStatus()
+
+d.mo.bFilter(:)=0;%break all bonds, no tensile force, same to d.breakGroup();
+d.mo.isHeat=1;%calculate heat in the model
+d.mo.setGPU('auto');
+d.setStandarddT();
+pile1Id=d.GROUP.Pile1;%get the Id of pile 1
+pile1Z=d.mo.aZ(pile1Id);
+topPileId=pile1Id(pile1Z>max(pile1Z)-B.ballR*0.1);%get the Id of pile top
+d.addGroup('topPile',topPileId);%add a new group
+d.addFixId('Z',d.GROUP.topPile);%fix the X-coordinate of the pile top
+
+totalCircle=20;
+stepNum=100;
+dis=1;%total distance
+dDis=dis/totalCircle/stepNum;%distance of each step
+d.tic(totalCircle*stepNum);
+%.mat files will be saved in the folder data/step
+fName=['data/step/' B.name num2str(B.ballR) '-' num2str(B.distriRate) 'loopNum'];
+save([fName '0.mat']);%return;
+
+for i=1:totalCircle
+    for j=1:stepNum
+        d.toc();%show the note of time
+        d.moveGroup('topPile',0,0,dDis);
+        d.balance('Standard',0.01);%
+        %d.balance('Standard',1); is d.balance(50,d.SET.packNum);
+    end
+    d.clearData(1);%clear data in d.mo
+    save([fName num2str(i) '.mat']);
+    d.calculateData();
+end
+
+d.mo.setGPU('off');
+d.clearData(1);
+d.recordCalHour('BoxPile3Finish');
+save(['TempModel/' B.name '3.mat'],'B','d');
+save(['TempModel/' B.name '3R' num2str(B.ballR) '-distri' num2str(B.distriRate)  'aNum' num2str(d.aNum) '.mat']);
+d.calculateData();
