@@ -128,8 +128,17 @@ for i = 1:totalCircle
     % B.SET.stressZZ*(1 + 1/totalCircle) up to B.SET.stressZZ*(1 + totalCircle/totalCircle)
     B.setPlatenStress(B.SET.stressXX,B.SET.stressYY,B.SET.stressZZ*(1 + i/totalCircle), B.ballR*5);                                % smooth boundary region
 
-    % Quasi-static balance each step
-    d.balance('Standard', 1);
+    % Quasi-static balance each step ** add more frames for smoother animation
+    stepNum = 50;
+    for j = 1:stepNum
+        d.balance('Standard', 0.01);
+        stepIndex = (i-1)*stepNum + j;
+        d.mo.setGPU('off');
+        save([fName num2str(stepIndex) '.mat'], 'd');
+        d.clearData(1);
+        d.calculateData();
+        d.mo.setGPU(gpuStatus);
+    end
 
     % Clear some stored data to reduce memory usage
     d.clearData(1);
