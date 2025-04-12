@@ -1,0 +1,265 @@
+# Granular Biaxial Test
+
+#include "test.h"
+#include <vector>
+#include <fstream>
+#include <cmath>
+
+class GranularBiaxial : public Test
+{
+public:
+    GranularBiaxial()
+    {
+        // Scale factor to control resolution
+        const float scale = 0.4f;  // Reduces from 50x166 to 20x40
+
+        // Calculate boundary width based on particle grid
+        const float db = 1.0f;
+        const int baseRows = 100;  // Base dimensions for 1:2 ratio
+        const int baseCols = 50;
+        const int rows = int(baseRows * scale);  // ~40 rows
+        const int cols = int(baseCols * scale);  // ~20 cols
+        const float spacing = 1.1f * db;
+        const float gridWidth = spacing * cols;
+        const float margin = 5.0f;
+        m_boundaryX = gridWidth / 2.0f + margin;  // Store in member variable
+
+        m_world->SetGravity(b2Vec2(0.0f, -0.1f));
+
+        // Create boundaries with calculated width
+        CreateWall(-m_boundaryX);
+        CreateWall(m_boundaryX);
+        CreateGround(m_boundaryX);
+
+        const float startX = -cols * spacing / 2.0f;
+        const float startY = 1.0f;
+
+        // Generate scaled-down particle grid
+        for (int i = 0; i < cols; ++i)
+        {
+            for (int j = 0; j < rows; ++j)
+            {
+                b2Vec2 pos(startX + i * spacing, startY + j * spacing);
+                CreateRandomPolygon(pos, db / 2.0f, m_frictionGen);
+            }
+        }
+
+        // Top piston - update width to match boundaries
+        {
+            b2BodyDef bd;
+            bd.type = b2_kinematicBody;
+            bd.position.Set(0.0f, startY + rows * spacing + 5.0f);
+            m_top = m_world->CreateBody(&bd);
+
+            b2PolygonShape shape;
+            shape.SetAsBox(m_boundaryX, 0.5f);
+
+            b2FixtureDef fd;
+            fd.shape = &shape;
+            fd.density = 0.0f;
+            fd.friction = 1.0f;
+            m_top->CreateFixture(&fd);
+        }
+
+        // Update initial height for strain calculations
+        m_initialHeight = rows * spacing;
+
+        // Initialize stress-strain tracking
+        m_maxParticleY = -FLT_MAX;
+        m_minParticleY = FLT_MAX;
+
+        // Open data file with headers
+        m_log << "strain,stress_ratio\n";
+    }
+
+    void CreateWall(float x)
+    {
+        b2BodyDef bd;
+        bd.position.Set(x, 100.0f);
+        b2Body* wall = m_world->CreateBody(&bd);
+
+        b2PolygonShape shape;
+        shape.SetAsBox(0.2f, 100.0f);
+        wall->CreateFixture(&shape, 0.0f);
+    }
+
+    void CreateGround(float width)
+    {
+        b2BodyDef bd;
+        bd.position.Set(0.0f, 0.0f);
+        b2Body* ground = m_world->CreateBody(&bd);
+
+        b2EdgeShape shape;
+        shape.SetTwoSided(b2Vec2(-width, 0.0f), b2Vec2(width, 0.0f));
+        ground->CreateFixture(&shape, 0.0f);
+    }
+
+    void CreateRandomPolygon(b2Vec2 pos, float radius, float friction)
+    {
+        int n = 6 + rand() % 3; // 6-8 sides
+        b2Vec2 verts[8];
+        float angleStep = 2.0f * b2_pi / n;
+        for (int i = 0; i < n; ++i)
+        {
+            float angle = i * angleStep;
+            verts[i].Set(radius * cosf(angle), radius * sinf(angle));
+        }
+
+        b2BodyDef bd;
+        bd.type = b2_dynamicBody;
+        bd.position = pos;
+        bd.angle = RandomFloat(-b2_pi, b2_pi);
+        b2Body* body = m_world->CreateBody(&bd);
+
+        b2PolygonShape shape;
+        shape.Set(verts, n);
+
+        b2FixtureDef fd;
+        fd.shape = &shape;
+        fd.density = 5000.0f;
+        fd.friction = friction;
+        fd.restitution = 0.0f;
+        body->CreateFixture(&fd);
+
+        m_particles.push_back(body);
+    }
+
+    float CalculateStressRatio()
+    {
+        float volume = m_initialHeight * (m_boundaryX * 2.0f); // Approximate sample volume
+        b2Mat22 stress;  // Initialize to zero
+        stress.SetZero();  // Explicitly set to zero instead of using b2Mat22_zero
+
+        // Calculate stress tensor from particle contacts
+        for (b2Body* body : m_particles)
+        {
+            for (b2ContactEdge* ce = body->GetContactList(); ce; ce = ce->next)
+            {
+                b2Contact* contact = ce->contact;
+                if (!contact->IsTouching()) continue;
+
+                b2WorldManifold worldManifold;
+                contact->GetWorldManifold(&worldManifold);
+
+                // Get contact force
+                b2Vec2 normal = worldManifold.normal;
+                float normalForce = 0.0f;
+
+                b2Manifold* manifold = contact->GetManifold();
+                for (int j = 0; j < manifold->pointCount; j++)
+                {
+                    b2ManifoldPoint* mp = manifold->points + j;
+                    normalForce += mp->normalImpulse;
+                }
+
+                // Contact position relative to particle center
+                b2Vec2 r = worldManifold.points[0] - body->GetPosition();
+
+                // Contribute to stress tensor
+                stress.ex.x += normal.x * r.x * normalForce;
+                stress.ex.y += normal.x * r.y * normalForce;
+                stress.ey.x += normal.y * r.x * normalForce;
+                stress.ey.y += normal.y * r.y * normalForce;
+            }
+        }
+
+        // Scale by volume
+        stress.ex.x /= volume;
+        stress.ex.y /= volume;
+        stress.ey.x /= volume;
+        stress.ey.y /= volume;
+
+        // Calculate principal stresses using eigenvalue decomposition
+        float trace = stress.ex.x + stress.ey.y;
+        float det = stress.ex.x * stress.ey.y - stress.ex.y * stress.ey.x;
+
+        float discriminant = trace * trace - 4.0f * det;
+        if (discriminant < 0.0f) return 1.0f;  // Avoid negative sqrt
+
+        float sqrt_disc = sqrtf(discriminant);
+        float sigma1 = (trace + sqrt_disc) * 0.5f;  // Major principal stress
+        float sigma2 = (trace - sqrt_disc) * 0.5f;  // Minor principal stress
+
+        // Calculate stress ratio (clamped to 0-50 range)
+        float ratio = (sigma2 != 0.0f) ? (sigma1 / sigma2) : 50.0f;
+        return b2Clamp(ratio, 0.0f, 50.0f);
+    }
+
+    void Step(Settings& settings) override
+    {
+        // Update piston movement
+        float y = m_top->GetPosition().y;
+        if (y > 5.0f)
+        {
+            m_top->SetLinearVelocity(b2Vec2(0.0f, -0.1f));
+        }
+        else
+        {
+            m_top->SetLinearVelocity(b2Vec2_zero);
+        }
+
+        // Track particle extents
+        m_maxParticleY = -FLT_MAX;
+        m_minParticleY = FLT_MAX;
+
+        for (b2Body* b : m_particles)
+        {
+            float y = b->GetPosition().y;
+            m_maxParticleY = b2Max(m_maxParticleY, y);
+            m_minParticleY = b2Min(m_minParticleY, y);
+        }
+
+        // Record data every 30 frames
+        if (m_stepCount % 30 == 0)
+        {
+            float currentHeight = m_maxParticleY - m_minParticleY;
+            float strain = (m_initialHeight - currentHeight) / m_initialHeight;
+            strain = b2Clamp(strain, 0.0f, 0.7f);  // Clamp to plot range
+
+            float stressRatio = CalculateStressRatio();
+
+            // Store and export data
+            m_stressStrainData.emplace_back(strain, stressRatio);
+            m_log << strain << "," << stressRatio << "\n";
+            m_log.flush();  // Ensure data is written
+        }
+
+        // Existing friction transition logic
+        if (m_stepCount == m_frictionTransitionStep)
+        {
+            for (b2Body* b : m_particles)
+            {
+                for (b2Fixture* f = b->GetFixtureList(); f; f = f->GetNext())
+                {
+                    f->SetFriction(m_frictionShear);
+                }
+            }
+        }
+
+        ++m_stepCount;
+        Test::Step(settings);
+    }
+
+    static Test* Create()
+    {
+        return new GranularBiaxial;
+    }
+
+private:
+    b2Body* m_top = nullptr;
+    std::vector<b2Body*> m_particles;
+    int m_stepCount = 0;
+    float m_frictionGen = 0.2f;
+    float m_frictionShear = 0.6f;
+    float m_initialHeight;  // Now set based on scaled rows
+    int m_frictionTransitionStep = 200;
+    std::ofstream m_log{ "C:/myDiss/box2dresults/granbiaxial/stress_strain.csv" };
+    std::vector<std::pair<float, float>> m_stressStrainData;
+    float m_maxParticleY;
+    float m_minParticleY;
+    float m_boundaryX;  // Store boundary width for volume calculation
+};
+
+static int testIndex = RegisterTest("Soil DEM", "Granular Biaxial", GranularBiaxial::Create);
+
+
