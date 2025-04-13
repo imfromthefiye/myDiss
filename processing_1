@@ -1,0 +1,136 @@
+# ----------sketch-------------
+
+import org.jbox2d.common.*;
+import org.jbox2d.dynamics.*;
+import org.jbox2d.collision.shapes.*;
+import org.jbox2d.dynamics.contacts.*;
+
+World world;
+ArrayList<Body> particles;
+Body topCap, leftWall, rightWall, bottomWall;
+float scale = 10.0;
+float db = 1.0; // particle diameter in meters
+float boxWidth = 30 * db;
+float boxHeight = 30 * db;
+float pistonSpeed = -0.1f;
+
+void setup() {
+  size(400, 400);
+  world = new World(new Vec2(0, -9.8f));
+  particles = new ArrayList<Body>();
+
+  createWalls();
+  createTopCap();
+  spawnParticles(50);
+}
+
+void draw() {
+  background(0);
+  world.step(1.0f / 60.0f, 8, 3);
+
+  movePiston();
+  drawParticles();
+  drawBox();
+}
+
+# ---------biaxial test--------------
+void createWalls() {
+  leftWall = createStaticBox(1, boxHeight / 2, 0.5f, boxHeight / 2);
+  rightWall = createStaticBox(boxWidth - 1, boxHeight / 2, 0.5f, boxHeight / 2);
+  bottomWall = createStaticBox(boxWidth / 2, 1, boxWidth / 2, 0.5f);
+}
+
+void createTopCap() {
+  BodyDef bd = new BodyDef();
+  bd.type = BodyType.KINEMATIC;
+  bd.position.set(boxWidth / 2, boxHeight - 1);
+  topCap = world.createBody(bd);
+
+  PolygonShape ps = new PolygonShape();
+  ps.setAsBox(boxWidth / 2, 0.5f);
+
+  FixtureDef fd = new FixtureDef();
+  fd.shape = ps;
+  fd.friction = 1.0f;
+  topCap.createFixture(fd);
+}
+
+void movePiston() {
+  topCap.setLinearVelocity(new Vec2(0, pistonSpeed));
+}
+
+void spawnParticles(int count) {
+  for (int i = 0; i < count; i++) {
+    float x = random(2, boxWidth - 2);
+    float y = random(boxHeight / 2, boxHeight - 5);
+    Body b = createParticle(x, y, db / 2);
+    particles.add(b);
+  }
+}
+
+Body createParticle(float x, float y, float r) {
+  BodyDef bd = new BodyDef();
+  bd.type = BodyType.DYNAMIC;
+  bd.position.set(x, y);
+  Body body = world.createBody(bd);
+
+  CircleShape cs = new CircleShape();
+  cs.m_radius = r;
+
+  FixtureDef fd = new FixtureDef();
+  fd.shape = cs;
+  fd.density = 5000;
+  fd.friction = 0.6f;
+  fd.restitution = 0;
+  body.createFixture(fd);
+
+  return body;
+}
+
+Body createStaticBox(float x, float y, float w, float h) {
+  BodyDef bd = new BodyDef();
+  bd.position.set(x, y);
+  Body body = world.createBody(bd);
+
+  PolygonShape ps = new PolygonShape();
+  ps.setAsBox(w, h);
+
+  FixtureDef fd = new FixtureDef();
+  fd.shape = ps;
+  fd.friction = 1.0f;
+  body.createFixture(fd);
+  return body;
+}
+
+void drawParticles() {
+  fill(200);
+  noStroke();
+  for (Body b : particles) {
+    Vec2 pos = b.getPosition();
+    ellipse(pos.x * scale, height - pos.y * scale, db * scale, db * scale);
+  }
+}
+
+void drawBox() {
+  stroke(0, 255, 0);
+  noFill();
+
+  // Bottom
+  rectMode(CENTER);
+  rect(bottomWall.getPosition().x * scale, height - bottomWall.getPosition().y * scale,
+       boxWidth * scale, 1 * scale);
+
+  // Left wall
+  rect(leftWall.getPosition().x * scale, height - leftWall.getPosition().y * scale,
+       1 * scale, boxHeight * scale);
+
+  // Right wall
+  rect(rightWall.getPosition().x * scale, height - rightWall.getPosition().y * scale,
+       1 * scale, boxHeight * scale);
+
+  // Top Cap
+  stroke(100, 100, 255);
+  rect(topCap.getPosition().x * scale, height - topCap.getPosition().y * scale,
+       boxWidth * scale, 1 * scale);
+}
+
