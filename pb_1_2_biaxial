@@ -1,4 +1,19 @@
-# This is a more concise version of the biaxial test, with circle particles instead of polygon
+"""
+This is a more concise version of the biaxial test, with circle particles instead of polygon
+
+Particles	400 circular, radius = 0.5m
+Density	5000 kg/m²
+Friction	0.6
+Box Size	30m × 30m
+Piston Speed	-0.1 m/s
+Gravity	(0, -9.8) m/s²
+Time Step	1/60 s (60 FPS)
+Visual Scale	10 px/m
+Window Size	400×400 px
+
+"""
+
+
 import pygame
 import random
 from Box2D import *
