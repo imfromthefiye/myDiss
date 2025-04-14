@@ -1,0 +1,88 @@
+# This is a more concise version of the biaxial test, with circle particles instead of polygon
+import pygame
+import random
+from Box2D import *
+
+# Constants
+SCALE = 10.0
+DB = 1.0
+BOX_WIDTH = 30 * DB
+BOX_HEIGHT = 30 * DB
+PISTON_SPEED = -0.1
+PARTICLE_COUNT = 400
+FPS = 60
+VEL_ITERS = 8
+POS_ITERS = 3
+WINDOW_SIZE = 400
+
+# Coordinate transform
+def to_screen(pos):
+    return int(pos[0] * SCALE), int(WINDOW_SIZE - pos[1] * SCALE)
+
+# Biaxial Test Setup
+def create_world():
+    world = b2World(gravity=(0, -9.8))
+    bodies = {}
+
+    def static_box(x, y, w, h):
+        body = world.CreateStaticBody(position=(x, y))
+        body.CreatePolygonFixture(box=(w, h), friction=1.0)
+        return body
+
+    bodies["left"] = static_box(1, BOX_HEIGHT / 2, 0.5, BOX_HEIGHT / 2)
+    bodies["right"] = static_box(BOX_WIDTH - 1, BOX_HEIGHT / 2, 0.5, BOX_HEIGHT / 2)
+    bodies["bottom"] = static_box(BOX_WIDTH / 2, 1, BOX_WIDTH / 2, 0.5)
+
+    top = world.CreateKinematicBody(position=(BOX_WIDTH / 2, BOX_HEIGHT - 12))
+    top.CreatePolygonFixture(box=(BOX_WIDTH / 2, 0.5), friction=1.0)
+    bodies["top"] = top
+
+    particles = []
+    for _ in range(PARTICLE_COUNT):
+        x = random.uniform(2, BOX_WIDTH - 2)
+        y = random.uniform(BOX_HEIGHT / 2, BOX_HEIGHT - 13)
+        body = world.CreateDynamicBody(position=(x, y))
+        shape = b2CircleShape(radius=DB / 2)
+        fixture = b2FixtureDef(shape=shape, density=5000, friction=0.6, restitution=0)
+        body.CreateFixture(fixture)
+        particles.append(body)
+
+    return world, bodies, particles
+
+# Main loop
+def run():
+    pygame.init()
+    screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
+    clock = pygame.time.Clock()
+    world, bodies, particles = create_world()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); return
+
+        screen.fill((0, 0, 0))
+        bodies["top"].linearVelocity = (0, PISTON_SPEED)
+        world.Step(1 / FPS, VEL_ITERS, POS_ITERS)
+
+        # Draw particles
+        for p in particles:
+            x, y = to_screen(p.position)
+            pygame.draw.circle(screen, (200, 200, 200), (x, y), int(DB * SCALE / 2))
+
+        # Draw walls and piston
+        def draw_box(body, w, h, color):
+            x, y = to_screen(body.position)
+            rect = pygame.Rect(x - w * SCALE, y - h * SCALE, 2 * w * SCALE, 2 * h * SCALE)
+            pygame.draw.rect(screen, color, rect, 1)
+
+        draw_box(bodies["left"], 0.5, BOX_HEIGHT / 2, (0, 255, 0))
+        draw_box(bodies["right"], 0.5, BOX_HEIGHT / 2, (0, 255, 0))
+        draw_box(bodies["bottom"], BOX_WIDTH / 2, 0.5, (0, 255, 0))
+        draw_box(bodies["top"], BOX_WIDTH / 2, 0.5, (100, 100, 255))
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+if __name__ == "__main__":
+    run()
