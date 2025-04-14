@@ -1,0 +1,114 @@
+# This is the first pybox2d code that simulates a simple biaxial test - no probe
+import pygame
+from Box2D import *
+import random
+import sys
+
+# Simulation parameters
+SCALE = 10.0
+DB = 1.0  # particle diameter in meters
+BOX_WIDTH = 30 * DB
+BOX_HEIGHT = 30 * DB
+PISTON_SPEED = -0.1
+FPS = 60
+VEL_ITERS = 8
+POS_ITERS = 3
+
+# Rendering size
+WINDOW_WIDTH = 400
+WINDOW_HEIGHT = 400
+
+class BiaxialTest:
+    def __init__(self):
+        self.world = b2World(gravity=(0, -9.8), doSleep=True)
+        self.particles = []
+        self.scale = SCALE
+
+        self.create_walls()
+        self.create_top_cap()
+        self.spawn_particles(400)
+
+        pygame.init()
+        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("PyBox2D Biaxial Test")
+        self.clock = pygame.time.Clock()
+
+    def world_to_screen(self, pos):
+        """Convert Box2D coordinates to pygame screen coordinates"""
+        return int(pos[0] * self.scale), int(WINDOW_HEIGHT - pos[1] * self.scale)
+
+    def create_static_box(self, x, y, w, h):
+        body = self.world.CreateStaticBody(position=(x, y))
+        box = body.CreatePolygonFixture(box=(w, h), friction=1.0)
+        return body
+
+    def create_walls(self):
+        self.left_wall = self.create_static_box(1, BOX_HEIGHT / 2, 0.5, BOX_HEIGHT / 2)
+        self.right_wall = self.create_static_box(BOX_WIDTH - 1, BOX_HEIGHT / 2, 0.5, BOX_HEIGHT / 2)
+        self.bottom_wall = self.create_static_box(BOX_WIDTH / 2, 1, BOX_WIDTH / 2, 0.5)
+
+    def create_top_cap(self):
+        body_def = b2BodyDef()
+        body_def.type = b2_kinematicBody
+        body_def.position = (BOX_WIDTH / 2, BOX_HEIGHT - 12)
+        self.top_cap = self.world.CreateBody(body_def)
+        shape = b2PolygonShape(box=(BOX_WIDTH / 2, 0.5))
+        fixture = self.top_cap.CreateFixture(shape=shape, friction=1.0)
+
+    def spawn_particles(self, count):
+        for _ in range(count):
+            x = random.uniform(2, BOX_WIDTH - 2)
+            y = random.uniform(BOX_HEIGHT / 2, BOX_HEIGHT - 13)
+            self.particles.append(self.create_particle(x, y, DB / 2))
+
+    def create_particle(self, x, y, r):
+        body_def = b2BodyDef()
+        body_def.type = b2_dynamicBody
+        body_def.position = (x, y)
+        body = self.world.CreateBody(body_def)
+        shape = b2CircleShape(radius=r)
+        fixture = b2FixtureDef(shape=shape, density=5000, friction=0.6, restitution=0)
+        body.CreateFixture(fixture)
+        return body
+
+    def move_piston(self):
+        self.top_cap.linearVelocity = (0, PISTON_SPEED)
+
+    def draw_particle(self, body):
+        pos = self.world_to_screen(body.position)
+        pygame.draw.circle(self.screen, (200, 200, 200), pos, int(DB * self.scale / 2))
+
+    def draw_box(self):
+        def draw_rect(body, w, h, color):
+            x, y = self.world_to_screen(body.position)
+            width = int(w * self.scale * 2)
+            height = int(h * self.scale * 2)
+            rect = pygame.Rect(x - width // 2, y - height // 2, width, height)
+            pygame.draw.rect(self.screen, color, rect, 1)
+
+        draw_rect(self.left_wall, 0.5, BOX_HEIGHT / 2, (0, 255, 0))
+        draw_rect(self.right_wall, 0.5, BOX_HEIGHT / 2, (0, 255, 0))
+        draw_rect(self.bottom_wall, BOX_WIDTH / 2, 0.5, (0, 255, 0))
+        draw_rect(self.top_cap, BOX_WIDTH / 2, 0.5, (100, 100, 255))
+
+    def run(self):
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+
+            self.screen.fill((0, 0, 0))
+            self.move_piston()
+            self.world.Step(1.0 / FPS, VEL_ITERS, POS_ITERS)
+
+            for p in self.particles:
+                self.draw_particle(p)
+            self.draw_box()
+
+            pygame.display.flip()
+            self.clock.tick(FPS)
+
+if __name__ == '__main__':
+    sim = BiaxialTest()
+    sim.run()
