@@ -1,0 +1,165 @@
+"""The first successful probe burrowing simulation!"""
+import pygame
+import random
+from Box2D import *
+
+# Constants
+SCALE = 10.0
+DB = 1.0
+RADIUS = DB / 2
+SOIL_DENSITY = 5000
+SOIL_FRICTION = 0.6
+PROBE_DENSITY = 7500
+FPS = 60
+WIDTH, HEIGHT = 30, 30
+GAP_WIDTH = 2.2
+WINDOW = int(WIDTH * SCALE)
+STAGE = "PREPARATION"
+
+# Packing thresholds
+MAX_PACKING_RATIO = 0.85
+
+# Initialization
+pygame.init()
+screen = pygame.display.set_mode((WINDOW, WINDOW))
+clock = pygame.time.Clock()
+world = b2World(gravity=(0, -9.8))
+particles, pistons, probe = [], {}, None
+blocking_plate = None
+penetration_log = []
+frame_count = 0
+
+def to_screen(p):
+    return int(p[0] * SCALE), int(WINDOW - p[1] * SCALE)
+
+def static_box(x, y, w, h):
+    b = world.CreateStaticBody(position=(x, y))
+    b.CreatePolygonFixture(box=(w, h), friction=1.0)
+    return b
+
+left_wall = static_box(1, HEIGHT/2, 0.5, HEIGHT/2)
+right_wall = static_box(WIDTH-1, HEIGHT/2, 0.5, HEIGHT/2)
+bottom = static_box(WIDTH/2, 1, WIDTH/2, 0.5)
+
+def create_packing_system():
+    global pistons, blocking_plate
+    p_w = (WIDTH - GAP_WIDTH) / 2
+    pistons["left"] = world.CreateKinematicBody(position=(p_w/2, HEIGHT - 2))
+    pistons["left"].CreatePolygonFixture(box=(p_w/2, 0.5), friction=1.0)
+
+    pistons["right"] = world.CreateKinematicBody(position=(WIDTH - p_w/2, HEIGHT - 2))
+    pistons["right"].CreatePolygonFixture(box=(p_w/2, 0.5), friction=1.0)
+
+    blocking_plate = world.CreateKinematicBody(position=(WIDTH / 2, HEIGHT - 2))
+    blocking_plate.CreatePolygonFixture(box=(GAP_WIDTH / 2, 0.5), friction=1.0)
+
+def spawn_soil(n=400):
+    for _ in range(n):
+        x = random.uniform(2, WIDTH - 2)
+        y = random.uniform(HEIGHT / 2, HEIGHT - 3)
+        b = world.CreateDynamicBody(position=(x, y))
+        b.CreateCircleFixture(radius=RADIUS, density=SOIL_DENSITY, friction=SOIL_FRICTION)
+        particles.append(b)
+
+def calculate_packing_ratio():
+    particle_area = len(particles) * (3.14 * RADIUS ** 2)
+    container_area = WIDTH * HEIGHT
+    return particle_area / container_area
+
+def insert_probe():
+    global probe
+    x_pos, y_pos = WIDTH / 2, HEIGHT - 5
+    b = world.CreateKinematicBody(position=(x_pos, y_pos), fixedRotation=True)
+
+    half_width = 2.1 / 2
+    half_height = 2.5 / 2
+    shape_rect = b2PolygonShape(box=(half_width, half_height))
+    tip_height = 2.1
+    tip_vertices = [(-half_width, -half_height), (half_width, -half_height), (0, -half_height - tip_height)]
+    shape_tip = b2PolygonShape(vertices=tip_vertices)
+
+    fixture_def = dict(density=PROBE_DENSITY, friction=0.8, restitution=0.1)
+    b.CreateFixture(shape=shape_rect, **fixture_def)
+    b.CreateFixture(shape=shape_tip, **fixture_def)
+
+    return b
+
+def draw_rect(b, w, h, color):
+    x, y = to_screen(b.position)
+    r = pygame.Rect(x - w*SCALE, y - h*SCALE, 2*w*SCALE, 2*h*SCALE)
+    pygame.draw.rect(screen, color, r, 1)
+
+create_packing_system()
+spawn_soil()
+packing_cycles = 0
+probe_velocity = -0.5
+
+while True:
+    for e in pygame.event.get():
+        if e.type == pygame.QUIT:
+            pygame.quit(); exit()
+
+    screen.fill((0, 0, 0))
+
+    if STAGE == "PREPARATION":
+        pistons["left"].linearVelocity = (0, -0.5)
+        pistons["right"].linearVelocity = (0, -0.5)
+        blocking_plate.linearVelocity = (0, -0.5)
+        world.Step(1/FPS, 8, 3)
+
+        ratio = calculate_packing_ratio()
+        if ratio > MAX_PACKING_RATIO or packing_cycles >= 300:
+            pistons["left"].linearVelocity = (0, 0)
+            pistons["right"].linearVelocity = (0, 0)
+            blocking_plate.linearVelocity = (0, 0)
+            STAGE = "READY_TO_PROBE"
+        else:
+            packing_cycles += 1
+
+    elif STAGE == "READY_TO_PROBE":
+        world.DestroyBody(blocking_plate)
+        probe = insert_probe()
+        STAGE = "BURROWING"
+
+    elif STAGE == "BURROWING":
+        if probe:
+            probe.linearVelocity = (0, probe_velocity)
+            penetration = (HEIGHT + 2) - probe.position.y
+
+            resistance = 0
+            for contact in world.contacts:
+                fixtureA, fixtureB = contact.fixtureA, contact.fixtureB
+                if fixtureA.body == probe or fixtureB.body == probe:
+                    world_manifold = contact.worldManifold
+                    if world_manifold:
+                        for point in world_manifold.points:
+                            resistance += abs(world_manifold.normal.y)
+
+            penetration_log.append((penetration, resistance))
+            frame_count += 1
+            if frame_count % 60 == 0:
+                print(f"Depth: {penetration:.2f} m, Resistance: {resistance:.2f} (approx.)")
+
+        world.Step(1/FPS, 8, 3)
+
+    for p in particles:
+        x, y = to_screen(p.position)
+        pygame.draw.circle(screen, (200, 200, 200), (x, y), int(RADIUS * SCALE))
+
+    draw_rect(left_wall, 0.5, HEIGHT/2, (0, 255, 0))
+    draw_rect(right_wall, 0.5, HEIGHT/2, (0, 255, 0))
+    draw_rect(bottom, WIDTH/2, 0.5, (0, 255, 0))
+    draw_rect(pistons["left"], (WIDTH - GAP_WIDTH)/4, 0.5, (100, 100, 255))
+    draw_rect(pistons["right"], (WIDTH - GAP_WIDTH)/4, 0.5, (100, 100, 255))
+    if blocking_plate:
+        draw_rect(blocking_plate, GAP_WIDTH/2, 0.5, (255, 255, 0))
+
+    if probe:
+        for f in probe.fixtures:
+            shape = f.shape
+            if isinstance(shape, b2PolygonShape):
+                verts = [to_screen(probe.transform * v) for v in shape.vertices]
+                pygame.draw.polygon(screen, (255, 100, 100), verts, 0)
+
+    pygame.display.flip()
+    clock.tick(FPS)
