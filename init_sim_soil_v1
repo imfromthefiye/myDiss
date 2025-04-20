@@ -1,0 +1,140 @@
+# soil.py – granular “rain → settle (4 s) → quit” generator
+# -------------------------------------------------------------
+#
+# key edits
+#   • N_GRAINS  → 1 000
+#   • BIN_W & PPM computed from simple packing–density rule‑of‑thumb
+#   • SPAWN_Y raised so grains fall inside the taller bin
+#   • window size automatically scales
+#
+# run:   python soil.py --vis
+# -----------------------------------------------------------------
+
+import sys, math, random, time, argparse
+from typing import List
+
+import Box2D
+from Box2D.b2 import (world, circleShape, fixtureDef)
+
+# ------------------------------------------------------------------
+# 1. Physics‑spec & quick packing estimate
+# ------------------------------------------------------------------
+N_GRAINS          = 1_000
+R_MIN, R_MAX      = 0.018, 0.022                # m
+R_MEAN            = 0.020
+GRAIN_AREA        = math.pi * R_MEAN**2 * N_GRAINS   # ≈ 1.26 m²
+PACK_FRAC         = 0.65                        # dense random disc packing 2‑D
+BIN_H             = 1.20                        # m  (we keep 1.2 m tall)
+
+# Bin width s.t.   packed‑area(=w*h/2*pack)  ≥ grain area
+BIN_W             = GRAIN_AREA / (PACK_FRAC * BIN_H * 0.5)
+# round up to the next 0.1 m for neatness
+BIN_W             = math.ceil(BIN_W*10)/10      # e.g. 3.3 m
+
+SPAWN_Y           = BIN_H - 0.20                # drop layer inside the tall bin
+SETTLE_T          = 4.0
+DT                = 1/60
+
+# 2. Draw parameters – keep window ≈ 1200 px wide whatever BIN_W is
+TARGET_WIN_WPX   = 1200
+PPM               = TARGET_WIN_WPX / BIN_W      # pixels per metre
+BGC   =(26,28,30);  WALLC=(0,0,128); GRAINC=(180,180,180)
+FPS_VIS           = 60
+# ------------------------------------------------------------------
+
+try:
+    import pygame
+    from pygame import gfxdraw
+except ImportError:
+    pygame = None                               # head‑less mode
+
+# --------------- physics helpers ----------------------------------------
+def make_world():
+    return world(gravity=(0, -9.81), doSleep=True)
+
+def build_bin(w):
+    hw, hh = BIN_W/2, BIN_H/2
+    # left wall
+    w.CreateStaticBody(position=(-hw, hh),
+                       shapes=Box2D.b2PolygonShape(box=(0.02, hh)),
+                       userData="wall")
+    # right wall
+    w.CreateStaticBody(position=( hw, hh),
+                       shapes=Box2D.b2PolygonShape(box=(0.02, hh)),
+                       userData="wall")
+    # bottom
+    w.CreateStaticBody(position=(0, 0.02),
+                       shapes=Box2D.b2PolygonShape(box=(hw, 0.02)),
+                       userData="wall")
+
+def rain_disks(w):
+    grains=[]
+    for _ in range(N_GRAINS):
+        r = random.uniform(R_MIN, R_MAX)
+        x = random.uniform(-BIN_W/2 + r,  BIN_W/2 - r)
+        y = SPAWN_Y + random.random()*0.10
+        body = w.CreateDynamicBody(
+            position=(x, y),
+            fixtures=fixtureDef(shape=circleShape(radius=r),
+                                density=1600*math.pi*r*r,
+                                friction=0.4, restitution=0.1))
+        body.linearDamping = 3.0
+        grains.append(body)
+    return grains
+
+# ---------------- drawing ------------------------------------------------
+def w2s(p, W,H):                         # world→screen
+    return int(p[0]*PPM + W/2), int(H - (p[1]*PPM + 40))
+
+def draw_bin(screen,w,W,H):
+    for b in w.bodies:
+        if b.userData!="wall": continue
+        for f in b.fixtures:
+            vs=[b.transform*v for v in f.shape.vertices]
+            pts=[w2s(p,W,H) for p in vs]
+            pygame.draw.polygon(screen,WALLC,pts,0)
+
+def draw_grains(screen,grains,W,H):
+    step=max(1,len(grains)//2000)
+    for g in grains[::step]:
+        x,y    = w2s(g.position,W,H)
+        r_px   = int(g.fixtures[0].shape.radius*PPM)
+        gfxdraw.filled_circle(screen,x,y,r_px,GRAINC)
+
+# ---------------- main ---------------------------------------------------
+def main(vis=False, slow=False):
+    wld = make_world();  build_bin(wld)
+    grains = rain_disks(wld)
+
+    if vis:
+        if pygame is None: raise RuntimeError("install pygame or omit --vis")
+        WIDTH=int(BIN_W*PPM)+80; HEIGHT=int(BIN_H*PPM)+80
+        pygame.init()
+        screen=pygame.display.set_mode((WIDTH,HEIGHT))
+        clock =pygame.time.Clock()
+
+    # settle
+    t=0.0
+    while t<SETTLE_T:
+        wld.Step(DT,10,6); t+=DT
+        if vis:
+            for e in pygame.event.get():
+                if e.type==pygame.QUIT: pygame.quit(); sys.exit()
+            screen.fill(BGC)
+            draw_bin(screen,wld,WIDTH,HEIGHT)
+            draw_grains(screen,grains,WIDTH,HEIGHT)
+            pygame.display.flip()
+            clock.tick(30 if slow else FPS_VIS)
+
+    print(f"Soil ready: {len(grains)} disks in {BIN_W:.1f} m × {BIN_H:.1f} m bin "
+          f"(settled {SETTLE_T} s).")
+    if vis:
+        time.sleep(0.5); pygame.quit()
+
+# ------------------------------------------------------------------------
+if __name__ == "__main__":
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--vis", action="store_true")
+    ap.add_argument("--slow",action="store_true",help="cap vis at 30 FPS")
+    args=ap.parse_args()
+    main(vis=args.vis, slow=args.slow)
