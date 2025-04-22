@@ -1,0 +1,438 @@
+"""Biaxial Compression Test - hexagonally packed discs for grains"""
+
+import pygame
+import Box2D
+from Box2D.b2 import (world, edgeShape, circleShape, fixtureDef, dynamicBody, staticBody, 
+                     polygonShape, kinematicBody, vec2)
+import math
+import sys
+
+# Constants
+PPM = 20.0  # Pixels Per Meter
+SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
+FPS = 60
+DISC_RADIUS = 1.0  # Radius in meters
+BACKGROUND_COLOR = (0, 0, 0)  # Black
+DISC_COLOR = (200, 200, 200)  # Light gray
+BOUNDARY_COLOR = (255, 0, 0)  # Red for boundary particles
+FORCE_COLOR = (0, 255, 0)  # Green for force indicators
+RAY_COLOR = (255, 255, 0)  # Yellow for ray visualization
+
+# Physics parameters from paper
+TIME_STEP = 1.0 / 60.0
+VEL_ITERATIONS = 100
+POS_ITERATIONS = 3
+FRICTION_COEFFICIENT = 0.1  # For particle-wall interaction
+
+# Test parameters
+VERTICAL_PRESSURE = 1.0  # kN/m - vertical stress (σᵥ)
+K0 = 0.5  # Ratio of horizontal to vertical effective stress
+CONFINING_PRESSURE = VERTICAL_PRESSURE * K0  # kN/m - horizontal stress (σₕ = K₀ × σᵥ)
+TOP_PLATEN_VELOCITY = 0.005  # m/s downward (corrected to match paper)
+TARGET_VOID_RATIO = 0.61  # Target void ratio from paper
+EQUILIBRIUM_VELOCITY_THRESHOLD = 0.01  # m/s for equilibrium detection
+MINIMUM_EQUILIBRIUM_TIME = 2.0  # seconds required at equilibrium
+
+# Initialize pygame
+pygame.init()
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+pygame.display.set_caption("Biaxial Test - Mathematical Implementation")
+clock = pygame.time.Clock()
+font = pygame.font.SysFont('Arial', 16)
+
+# Initialize Box2D world with zero gravity as in the paper
+b2_world = world(gravity=(0, 0), doSleep=True)
+
+# Custom ray cast callback class
+class BoundaryRayCastCallback(Box2D.b2RayCastCallback):
+    """Custom callback to identify boundary particles."""
+    def __init__(self):
+        Box2D.b2RayCastCallback.__init__(self)
+        self.ray_hits = []
+    
+    def ReportFixture(self, fixture, point, normal, fraction):
+        """Called for each fixture hit by the ray."""
+        body = fixture.body
+        if hasattr(body, 'userData') and body.userData is not None and body.userData['is_edge']:
+            # Only mark edge particles as boundary
+            body.userData['is_boundary'] = True
+            body.userData['ray_hits'] += 1
+            self.ray_hits.append((point, normal))
+        return 1.0  # Continue raycasting
+
+# Helper function to convert Box2D coordinates to screen coordinates
+def to_screen(coords):
+    return (int(coords[0] * PPM + SCREEN_WIDTH/2), 
+            int(SCREEN_HEIGHT/2 - coords[1] * PPM))
+
+# Create hexagonally packed discs
+def create_hexagonal_packing(rows=10, cols=5):
+    """Create a hexagonal packing of discs."""
+    particles = []
+    
+    # Horizontal and vertical spacing between disc centers
+    x_spacing = 2 * DISC_RADIUS
+    y_spacing = DISC_RADIUS * math.sqrt(3)  # For hexagonal packing
+    
+    # Starting position (centered on screen)
+    start_x = -(cols-1) * x_spacing / 2
+    start_y = -(rows-1) * y_spacing / 2
+    
+    for row in range(rows):
+        for col in range(cols):
+            # For hexagonal packing, offset even rows
+            offset = DISC_RADIUS if row % 2 == 0 else 0
+            
+            # Calculate position
+            x = start_x + col * x_spacing + offset
+            y = start_y + row * y_spacing
+            
+            # Create a disc using Box2D
+            body = b2_world.CreateDynamicBody(position=(x, y))
+            fixture = body.CreateCircleFixture(
+                radius=DISC_RADIUS, 
+                density=1.0, 
+                friction=FRICTION_COEFFICIENT
+            )
+            
+            # Store additional data with the body
+            body.userData = {
+                'is_boundary': False,
+                'ray_hits': 0,
+                'is_edge': (col == 0 or col == cols-1 or row == 0 or row == rows-1)  # Track edge particles
+            }
+            
+            particles.append(body)
+    
+    return particles
+
+# Create top and bottom platens
+def create_platens(particles):
+    """Create top and bottom platens based on particle positions."""
+    min_y = min(p.position.y for p in particles) - 1.5 * DISC_RADIUS
+    max_y = max(p.position.y for p in particles) + 1.5 * DISC_RADIUS
+    max_x = max(abs(p.position.x) for p in particles) + DISC_RADIUS
+    
+    # Create bottom platen (static)
+    bottom_platen = b2_world.CreateStaticBody(
+        position=(0, min_y - 0.5),
+        shapes=polygonShape(box=(max_x + 1, 0.5))
+    )
+    
+    # Create top platen (kinematic - will move)
+    top_platen = b2_world.CreateKinematicBody(
+        position=(0, max_y + 0.5),
+        shapes=polygonShape(box=(max_x + 1, 0.5))
+    )
+    
+    return bottom_platen, top_platen, min_y, max_y
+
+# Cast rays to identify boundary particles
+def cast_rays(particles, min_y, max_y):
+    """Cast horizontal rays to identify boundary particles using proper callback."""
+    # Reset all particles
+    for p in particles:
+        p.userData['is_boundary'] = False
+        p.userData['ray_hits'] = 0
+    
+    # Define ray parameters
+    ray_count = 20  # Number of rays to cast
+    ray_spacing = (max_y - min_y) / ray_count
+    max_x = max(abs(p.position.x) for p in particles) + DISC_RADIUS
+    
+    all_ray_hits = []
+    
+    # Cast rays from left to right
+    for i in range(ray_count):
+        y = min_y + i * ray_spacing
+        callback = BoundaryRayCastCallback()
+        b2_world.RayCast(callback, (-max_x-1, y), (max_x+1, y))
+        all_ray_hits.extend(callback.ray_hits)
+    
+    # Cast rays from right to left (to catch any missed particles)
+    for i in range(ray_count):
+        y = min_y + i * ray_spacing
+        callback = BoundaryRayCastCallback()
+        b2_world.RayCast(callback, (max_x+1, y), (-max_x-1, y))
+        all_ray_hits.extend(callback.ray_hits)
+    
+    return all_ray_hits, ray_count, ray_spacing, max_x
+
+# Apply confining pressure to boundary particles
+def apply_confining_pressure(particles, pressure, sample_height):
+    """
+    Apply confining pressure to boundary particles.
+    
+    F_{h,i} = (σ_h * L_total / N_hits) * n_hits,i
+    """
+    applied_forces = []  # Store forces for visualization
+    
+    # Get center of mass of all particles
+    center_x = sum(p.position.x for p in particles) / len(particles)
+    
+    # Count total number of ray hits across all boundary particles
+    total_ray_hits = sum(p.userData['ray_hits'] for p in particles if p.userData['is_boundary'])
+    
+    # Calculate force per ray hit: F = pressure * height / total_hits
+    force_per_hit = 0
+    if total_ray_hits > 0:
+        force_per_hit = pressure * sample_height / total_ray_hits
+    
+    for p in particles:
+        if p.userData['is_boundary'] and p.userData['ray_hits'] > 0:
+            # Direction is towards center (unit vector calculation)
+            dx = center_x - p.position.x
+            distance = abs(dx)
+            
+            if distance > 0:
+                # Force magnitude proportional to ray hits and pressure
+                force_magnitude = force_per_hit * p.userData['ray_hits']
+                
+                # Force direction vector toward center
+                force_x = (1 if dx > 0 else -1) * force_magnitude
+                force_y = 0  # No vertical component for confining pressure
+                
+                # Apply force
+                p.ApplyForce((force_x, force_y), p.worldCenter, True)
+                
+                # Store for visualization
+                applied_forces.append((p.position, (force_x, force_y)))
+    
+    return applied_forces
+
+# Calculate void ratio
+def calculate_void_ratio(particles, min_y, max_y):
+    """
+    Calculate the void ratio of the sample.
+    
+    e = (A_total - A_particles) / A_particles
+    """
+    # Calculate total area
+    max_x = max(abs(p.position.x) for p in particles) + DISC_RADIUS
+    total_area = (max_y - min_y) * (max_x * 2)
+    
+    # Calculate particle area
+    particle_area = sum(math.pi * DISC_RADIUS**2 for p in particles)
+    
+    # Calculate void ratio (e = A_v / A_s)
+    void_area = total_area - particle_area
+    return void_area / particle_area
+
+# Calculate strain
+def calculate_strain(initial_height, current_height):
+    """
+    Calculate axial strain.
+    
+    ε_a(t) = (L_0 - L(t)) / L_0
+    """
+    return (initial_height - current_height) / initial_height
+
+# Calculate stress ratio based on Rowe's theory
+def calculate_theoretical_stress_ratio(friction_coefficient):
+    """
+    Calculate theoretical stress ratio based on Rowe's theory.
+    
+    σ_1/σ_2 = tan(60°) * tan(φ_μ + β)
+    
+    where φ_μ = tan^-1(μ) and β ≈ 0
+    """
+    phi_mu = math.atan(friction_coefficient)
+    beta = 0  # Simplified assumption
+    return math.tan(math.radians(60)) * math.tan(phi_mu + beta)
+
+# Measure maximum particle velocity
+def get_max_particle_velocity(particles):
+    """
+    Get maximum particle velocity.
+    
+    v_max = max_{i ∈ {1,2,...,n}} ||v_i||
+    """
+    return max((p.linearVelocity.length for p in particles), default=0)
+
+# Create particles
+particles = create_hexagonal_packing(rows=10, cols=5)
+
+# Create platens
+bottom_platen, top_platen, min_y, max_y = create_platens(particles)
+
+# Track initial height for strain calculation
+initial_height = max_y - min_y
+current_height = initial_height
+current_strain = 0
+
+# Simulation phases
+PHASE_EQUILIBRIUM = 0  # Apply initial stresses and reach equilibrium
+PHASE_SHEARING = 1     # Move top platen for biaxial test
+current_phase = PHASE_EQUILIBRIUM
+phase_names = ["Equilibrium", "Shearing"]
+
+# Initial values
+initial_void_ratio = calculate_void_ratio(particles, min_y, max_y)
+equilibrium_time = 0  # Time spent in equilibrium phase
+
+# Track time for simulation
+simulation_time = 0
+
+# Initialize stress measurements
+vertical_stress = VERTICAL_PRESSURE
+horizontal_stress = CONFINING_PRESSURE
+stress_ratio = vertical_stress / horizontal_stress
+theoretical_stress_ratio = calculate_theoretical_stress_ratio(FRICTION_COEFFICIENT)
+
+# Main game loop
+running = True
+show_rays = True  # Toggle for ray visualization
+paused = False
+ray_cast_data = ([], 20, 0, 0)  # Initialize ray cast data
+applied_forces = []  # Initialize applied_forces
+
+while running:
+    # Handle events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r:
+                show_rays = not show_rays
+            elif event.key == pygame.K_SPACE:
+                paused = not paused
+    
+    if not paused:
+        # Update simulation time
+        simulation_time += TIME_STEP
+        
+        # Cast rays to identify boundary particles
+        ray_cast_data = cast_rays(particles, min_y, max_y)
+        ray_hits, ray_count, ray_spacing, max_x = ray_cast_data
+        
+        # Calculate current sample height
+        current_height = top_platen.position.y - bottom_platen.position.y - 1.0  # Adjust for platen thickness
+        
+        # Apply confining pressure - using mathematically precise formula
+        applied_forces = apply_confining_pressure(particles, CONFINING_PRESSURE, current_height)
+        
+        # Phase-specific logic
+        if current_phase == PHASE_EQUILIBRIUM:
+            # Check if equilibrium is reached using velocity threshold
+            max_vel = get_max_particle_velocity(particles)
+            
+            # v_max < v_threshold for time t > t_min
+            if max_vel < EQUILIBRIUM_VELOCITY_THRESHOLD and equilibrium_time > MINIMUM_EQUILIBRIUM_TIME:
+                # Transition to shearing phase
+                print("Equilibrium reached. Moving to shearing phase.")
+                current_phase = PHASE_SHEARING
+            else:
+                equilibrium_time += TIME_STEP
+        
+        elif current_phase == PHASE_SHEARING:
+            # Move top platen at constant velocity v_platen = (0, -v_rate)
+            top_platen.linearVelocity = (0, -TOP_PLATEN_VELOCITY)
+        
+        # Update physics
+        b2_world.Step(TIME_STEP, VEL_ITERATIONS, POS_ITERATIONS)
+        
+        # Calculate current strain using proper formula
+        current_strain = calculate_strain(initial_height, current_height)
+        
+        # Update void ratio measurement
+        current_void_ratio = calculate_void_ratio(particles, min_y, max_y)
+        
+        # Update stress ratio
+        # In a real implementation, this would measure actual forces
+        # For now we assume ideal response
+        vertical_stress = VERTICAL_PRESSURE / (1 - current_strain)  # Adjust for area change
+        horizontal_stress = CONFINING_PRESSURE  # Constant by design
+        stress_ratio = vertical_stress / horizontal_stress
+    
+    # Clear the screen
+    screen.fill(BACKGROUND_COLOR)
+    
+    # Draw rays if enabled
+    if show_rays:
+        ray_hits, ray_count, ray_spacing, max_x = ray_cast_data
+        for i in range(ray_count):
+            y = min_y + i * ray_spacing
+            pygame.draw.line(screen, 
+                             RAY_COLOR, 
+                             to_screen((-max_x-1, y)), 
+                             to_screen((max_x+1, y)), 
+                             1)
+    
+    # Draw all particles
+    for particle in particles:
+        position = particle.position
+        screen_position = to_screen(position)
+        
+        # Choose color based on boundary status
+        color = BOUNDARY_COLOR if particle.userData['is_boundary'] else DISC_COLOR
+        
+        # Draw the disc
+        pygame.draw.circle(
+            screen, 
+            color, 
+            screen_position, 
+            int(DISC_RADIUS * PPM)
+        )
+        
+        # Draw ray hit count for boundary particles
+        if particle.userData['is_boundary'] and particle.userData['ray_hits'] > 0:
+            text = font.render(str(particle.userData['ray_hits']), True, (255, 255, 255))
+            screen.blit(text, (screen_position[0] - 5, screen_position[1] - 8))
+    
+    # Draw platens
+    for platen in [bottom_platen, top_platen]:
+        # Get fixture and draw as rectangle
+        for fixture in platen.fixtures:
+            # Get fixture shape (assuming it's a polygon)
+            vertices = [(platen.transform * v) * PPM for v in fixture.shape.vertices]
+            # Convert to screen coordinates
+            vertices = [(v[0] + SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - v[1]) for v in vertices]
+            # Draw polygon
+            pygame.draw.polygon(screen, (150, 150, 150), vertices)
+    
+    # Draw applied forces
+    for pos, force in applied_forces:
+        start_pos = to_screen(pos)
+        # Scale force for visualization
+        end_pos = (
+            start_pos[0] + int(force[0] * 5),
+            start_pos[1]  # No vertical component
+        )
+        pygame.draw.line(screen, FORCE_COLOR, start_pos, end_pos, 2)
+    
+    # Draw ray hit points
+    if show_rays:
+        for point, normal in ray_hits:
+            screen_point = to_screen(point)
+            # Draw a small circle at the hit point
+            pygame.draw.circle(screen, RAY_COLOR, screen_point, 2)
+    
+    # Draw status information
+    status_text = [
+        f"Phase: {phase_names[current_phase]}",
+        f"Strain: {current_strain:.4f}",
+        f"Void Ratio: {current_void_ratio:.4f} (Initial: {initial_void_ratio:.4f})",
+        f"Stress Ratio: {stress_ratio:.4f} (Theory: {theoretical_stress_ratio:.4f})",
+        f"Vertical Stress: {vertical_stress:.2f} kN/m",
+        f"Horizontal Stress: {horizontal_stress:.2f} kN/m (K0={K0:.1f})",
+        f"Sample Height: {current_height:.2f}m (Initial: {initial_height:.2f}m)",
+        f"Max Velocity: {get_max_particle_velocity(particles):.4f} m/s",
+        f"Time: {simulation_time:.2f}s",
+        f"Boundary Particles: {sum(1 for p in particles if p.userData['is_boundary'])}",
+        "Press R to toggle ray visualization",
+        "Press SPACE to pause/resume"
+    ]
+    
+    for i, text in enumerate(status_text):
+        text_surface = font.render(text, True, (255, 255, 255))
+        screen.blit(text_surface, (10, 10 + i*20))
+    
+    # Update the display
+    pygame.display.flip()
+    
+    # Maintain frame rate
+    clock.tick(FPS)
+
+# Quit pygame
+pygame.quit()
+sys.exit()
